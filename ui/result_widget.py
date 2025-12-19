@@ -95,9 +95,6 @@ class ResultWidget(QWidget):
     def run_calculation(self, data):
         self.latest_data = data
 
-        # 디버그(버그 잡을 때만 켜도 됨)
-        # print("[DEBUG] standard:", data.get("standard"), "t_clear_raw:", data.get("t_clear"))
-
         try:
             In_A = rated_current(data["V"], data["S"])
             Isc_A = short_circuit_current(data["V"], data["S"], data["Z"])
@@ -113,7 +110,9 @@ class ResultWidget(QWidget):
         Isc_kA = float(Isc_A / 1000.0)
         protection_ratio = (Icu_kA / Isc_kA) if Isc_kA > 0 else 0.0
 
-        # 케이블 판정
+        # ----------------------------
+        # 케이블 판정: AUTO/MANUAL 정책 적용
+        # ----------------------------
         cable_j = cable_allowable_current_adv(
             I_load=float(data["I_load"]),
             material=data.get("cable_material"),
@@ -121,44 +120,45 @@ class ResultWidget(QWidget):
             install=data.get("cable_install"),
             ambient=data.get("cable_ambient"),
             parallel=data.get("cable_parallel"),
+            mode=data.get("cable_mode", "AUTO"),
+            section_mm2_input=data.get("cable_section_mm2_input"),
         )
         cable_status = cable_j["status"]
+        section_used = cable_j.get("section_mm2_used")
 
-        # 열상승(단열식) 판정: t_clear 있으면 최소한 계산되도록 변경
+        # ----------------------------
+        # 열상승(t_clear 정책 고정)
+        # t_clear = 사용자 입력값만 사용
+        # ----------------------------
         thermal_j = thermal_adiabatic_check(
             I_sc_A=Isc_A,
             t_clear_s=data.get("t_clear"),
-            section_mm2=data.get("cable_section_mm2"),
+            section_mm2_used=section_used,
             material=data.get("cable_material"),
             insulation=data.get("cable_insulation"),
             standard=data.get("standard"),
         )
-
         thermal_status = thermal_j["status"]
 
         # ----------------------------
-        # 설비 판정(Hard) 확정 로직
+        # 설비 판정(Hard)
         # ----------------------------
-        # 1) 차단기 부적합이면 무조건 FAIL
         if breaker_result != "적합":
             equipment_status = "부적합"
             final_line = "최종 결론: 설비 기준 미충족으로 사용 불가"
             final_sub = "차단기 차단용량(Icu)이 단락전류(Isc)를 만족하지 않아 기준 미달입니다."
 
-        # 2) 케이블이 '부적합'이면 조건미충족이 아니라 FAIL
         elif cable_status == "부적합":
             equipment_status = "부적합"
             final_line = "최종 결론: 설비 기준 미충족으로 사용 불가"
             final_sub = "케이블 허용전류가 부하전류를 만족하지 않아 기준 미달입니다."
 
-        # 3) 열상승이 '부적합'이면 FAIL
         elif thermal_status == "부적합":
             equipment_status = "부적합"
             final_line = "최종 결론: 설비 기준 미충족으로 사용 불가"
             final_sub = "열적(단열) 검토에서 기준을 초과하여 기준 미달입니다."
 
-        # 4) 그 외 판정 불가가 섞이면 '조건 미충족'
-        elif cable_status == "판정 불가" or thermal_status == "판정 불가":
+        elif cable_status == "계산 불가" or thermal_status == "계산 불가":
             equipment_status = "조건 미충족"
             final_line = "최종 결론: 설비 판정 조건 미충족"
             final_sub = "케이블/열상승 판정에 필요한 입력 후 재평가가 필요합니다."
@@ -171,7 +171,6 @@ class ResultWidget(QWidget):
         self.final_line.setText(final_line)
         self.final_sub.setText(final_sub)
 
-        # 요약 출력
         sum_lines = [
             f"정격전류(In): {In_A:,.0f} A",
             f"단락전류(Isc): {self._fmt_ka_a(Isc_A)}",
@@ -180,9 +179,11 @@ class ResultWidget(QWidget):
             f"케이블 판정: {cable_status}",
             f"열상승 판정: {thermal_status}",
         ]
+        if section_used is not None:
+            sum_lines.append(f"최종 케이블 단면적(S): {float(section_used):.0f} mm²")
+
         self.sum_text.setText("\n".join(sum_lines))
 
-        # 근거 출력
         judge_lines = []
         judge_lines.append(
             f"차단기 판정: {breaker_result} "
@@ -190,13 +191,14 @@ class ResultWidget(QWidget):
         )
 
         judge_lines.append(f"케이블 판정: {cable_status}\n- {cable_j['reason']}")
-
         judge_lines.append(f"열상승 판정: {thermal_status}\n- {thermal_j['reason']}")
+
+        # t_clear 정책 문구 고정
+        judge_lines.append("t_clear 정책: 열상승(단열식) 계산은 사용자 입력 t_clear만 사용합니다. (TCC 예상 차단시간은 참고용)")
 
         self.judge_text.setText("\n\n".join(judge_lines))
 
         # 상세 페이지로 넘길 results
-        # - breaker_pickup/TMS는 추후 실제 계전기 파라미터 입력 붙이면 교체
         self.latest_results = {
             "equipment_status": equipment_status,
             "equipment_final_line": final_line,
@@ -209,17 +211,16 @@ class ResultWidget(QWidget):
             "Icu_kA": float(Icu_kA),
             "Isc_kA": float(Isc_kA),
 
-            # 임시 파라미터(평가불가 방지용)
             "breaker_pickup": float(max(float(data["I_load"]) * 1.2, 1.0)),
             "breaker_tms": 0.3,
 
             "dt": float(data.get("dt", 1.0)) if float(data.get("dt", 1.0)) > 0 else 1.0,
 
-            # 케이블/열상승 정보도 상세에서 보여줄 수 있게 전달
             "cable_status": cable_status,
-            "cable_name": cable_j.get("cable"),
-            "cable_I_allow_total": cable_j.get("I_allow_total"),
+            "cable_section_mm2_used": section_used,
+
             "thermal_status": thermal_status,
+            "t_clear_used": data.get("t_clear"),  # 정책상 이게 항상 사용됨
         }
 
     def _set_fail(self, line, sub):

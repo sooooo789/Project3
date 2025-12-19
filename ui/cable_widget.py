@@ -17,40 +17,37 @@ class CableWidget(QWidget):
         title.setStyleSheet("font-weight:900; font-size:18px;")
         layout.addWidget(title)
 
-        # 재질
+        self.mode = QComboBox()
+        self.mode.addItems(["자동선정(AUTO)", "수동입력(MANUAL)"])
+
         self.material = QComboBox()
         self.material.addItems(["Cu", "Al"])
 
-        # 절연
         self.insulation = QComboBox()
         self.insulation.addItems(["XLPE", "PVC"])
 
-        # 설치방법
         self.install = QComboBox()
         self.install.addItems(["트레이", "덕트", "매설"])
 
-        # 주위온도
         self.ambient = QLineEdit()
         self.ambient.setPlaceholderText("예: 30")
 
-        # 병렬 케이블 수
         self.parallel = QLineEdit()
         self.parallel.setPlaceholderText("예: 1")
 
-        # 단면적(mm2)  <<<<<<<<<< 추가
         self.section = QLineEdit()
-        self.section.setPlaceholderText("예: 95  (단위: mm²)")
+        self.section.setPlaceholderText("수동입력일 때만 사용 (예: 95)")
 
         for label, w in [
+            ("모드", self.mode),
             ("재질", self.material),
             ("절연", self.insulation),
             ("설치방법", self.install),
             ("주위온도(°C)", self.ambient),
             ("병렬 케이블 수", self.parallel),
-            ("케이블 단면적(mm²)", self.section),
+            ("케이블 단면적 S(mm²)", self.section),
         ]:
-            lb = QLabel(label)
-            layout.addWidget(lb)
+            layout.addWidget(QLabel(label))
             layout.addWidget(w)
 
         btn_row = QHBoxLayout()
@@ -75,49 +72,56 @@ class CableWidget(QWidget):
 
         layout.addStretch(1)
 
+        self.mode.currentIndexChanged.connect(self._apply_mode_ui)
+        self._apply_mode_ui()
+
+    def _apply_mode_ui(self):
+        is_manual = "MANUAL" in self.mode.currentText()
+        self.section.setEnabled(is_manual)
+
     def go_back(self):
-        # 기본 입력으로 돌아가는 게 자연스러움
         self.parent.setCurrentWidget(self.parent.input_page)
 
     def save(self):
-        # 숫자 필드 검증
         try:
             ambient = float(self.ambient.text().strip())
             parallel = int(float(self.parallel.text().strip()))
-            section = float(self.section.text().strip())
         except Exception:
-            QMessageBox.warning(self, "입력 오류", "주위온도/병렬/단면적은 숫자로 입력하세요.")
+            QMessageBox.warning(self, "입력 오류", "주위온도/병렬은 숫자로 입력하세요.")
             return
 
         if parallel <= 0:
             parallel = 1
-        if ambient <= -50 or ambient > 200:
-            QMessageBox.warning(self, "입력 오류", "주위온도 범위를 확인하세요.")
-            return
-        if section <= 0:
-            QMessageBox.warning(self, "입력 오류", "단면적(mm²)은 0보다 커야 합니다.")
-            return
+
+        mode = "MANUAL" if "MANUAL" in self.mode.currentText() else "AUTO"
+
+        section_mm2 = None
+        if mode == "MANUAL":
+            try:
+                section_mm2 = float(self.section.text().strip())
+            except Exception:
+                QMessageBox.warning(self, "입력 오류", "수동입력 모드에서는 단면적(S)을 숫자로 입력하세요.")
+                return
+            if section_mm2 <= 0:
+                QMessageBox.warning(self, "입력 오류", "단면적(S)은 0보다 커야 합니다.")
+                return
 
         data = {
+            "cable_mode": mode,
             "cable_material": self.material.currentText(),
             "cable_insulation": self.insulation.currentText(),
             "cable_install": self.install.currentText(),
             "cable_ambient": ambient,
             "cable_parallel": parallel,
-            "cable_section_mm2": section,  # << 저장 핵심
+            "cable_section_mm2_input": section_mm2,  # 수동입력일 때만 값 존재
         }
 
         self.parent.cable_data = data
         self.status.setText(
             "저장 완료\n"
+            f"- 모드: {mode}\n"
             f"- {data['cable_material']} / {data['cable_insulation']} / {data['cable_install']}\n"
-            f"- {data['cable_ambient']:.0f}℃ / 병렬 {data['cable_parallel']} / {data['cable_section_mm2']:.0f}mm²"
+            f"- {data['cable_ambient']:.0f}℃ / 병렬 {data['cable_parallel']}\n"
+            f"- S(입력): {('미사용(AUTO)' if section_mm2 is None else f'{section_mm2:.0f}mm²')}"
         )
         QMessageBox.information(self, "저장", "케이블 조건 저장 완료")
-
-
-    def go_home(self):
-        self.parent.setCurrentWidget(self.parent.home_page)
-
-    def go_basic(self):
-        self.parent.setCurrentWidget(self.parent.input_page)
