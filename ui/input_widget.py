@@ -1,10 +1,11 @@
+# ui/input_widget.py
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QMessageBox, QHBoxLayout,
     QScrollArea, QSizePolicy
 )
-
 from PySide6.QtCore import Qt
+
 
 class InputWidget(QWidget):
     def __init__(self, parent):
@@ -15,13 +16,13 @@ class InputWidget(QWidget):
         outer.setContentsMargins(20, 20, 20, 20)
         outer.setSpacing(10)
 
-        # 스크롤 영역
+        # Scroll area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         outer.addWidget(self.scroll)
 
-        # 스크롤 안에 들어갈 실제 폼 컨테이너
+        # Form container inside scroll
         body = QWidget()
         self.scroll.setWidget(body)
 
@@ -34,8 +35,8 @@ class InputWidget(QWidget):
         layout.addWidget(title)
 
         note = QLabel(
-            "※ 케이블 입력은 홈에서 별도로 저장할 수 있습니다.\n"
-            "   케이블 조건이 저장되어 있으면 계산 시 자동 반영됩니다."
+            "※ 케이블 입력은 별도 페이지에서 저장합니다.\n"
+            "   케이블 조건이 저장되어 있으면 결과 계산 시 자동 반영됩니다."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#374151;")
@@ -71,8 +72,6 @@ class InputWidget(QWidget):
             layout.addWidget(lb)
             layout.addWidget(widget)
 
-        # 버튼들(스크롤 안에 같이 들어가도 되고, 밖에 고정해도 되는데
-        # 일단 형님 화면처럼 아래에 보이게 하려면 스크롤 안에 둬도 충분히 안정적임)
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
 
@@ -103,17 +102,22 @@ class InputWidget(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         cd = getattr(self.parent, "cable_data", None)
+        saved = bool(cd) and (cd.get("material") is not None or cd.get("section_mm2") is not None)
         self.cable_state.setText(
-            "케이블 조건 저장: 있음"
-            if cd else
-            "케이블 조건 저장: 없음 (케이블 판정은 판정 불가로 처리됨)"
+            "케이블 조건 저장: 있음" if saved
+            else "케이블 조건 저장: 없음 (케이블/열상승은 계산 불가로 처리될 수 있음)"
         )
 
     def go_home(self):
-        self.parent.setCurrentWidget(self.parent.home_page)
+        # home_page가 없으면 기본 입력 페이지로 fallback
+        if hasattr(self.parent, "home_page"):
+            self.parent.setCurrentWidget(self.parent.home_page)
+        elif hasattr(self.parent, "input_page"):
+            self.parent.setCurrentWidget(self.parent.input_page)
 
     def go_cable(self):
-        self.parent.setCurrentWidget(self.parent.cable_page)
+        if hasattr(self.parent, "cable_page"):
+            self.parent.setCurrentWidget(self.parent.cable_page)
 
     def calculate(self):
         required = [self.voltage, self.capacity, self.impedance, self.load_current, self.breaker_rating]
@@ -143,9 +147,9 @@ class InputWidget(QWidget):
             QMessageBox.warning(self, "입력 오류", "숫자 형식이 올바르지 않습니다.")
             return
 
-        cd = getattr(self.parent, "cable_data", None)
-        if cd:
-            data.update(cd)
+        # 케이블 조건은 data에 섞지 않고, ResultWidget이 parent.cable_data를 직접 읽도록 고정
+        if hasattr(self.parent, "result_page"):
+            self.parent.result_page.run_calculation(data)
 
-        self.parent.result_page.run_calculation(data)
-        self.parent.setCurrentWidget(self.parent.result_page)
+        if hasattr(self.parent, "result_page"):
+            self.parent.setCurrentWidget(self.parent.result_page)

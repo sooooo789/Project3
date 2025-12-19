@@ -1,15 +1,30 @@
+# ui/cable_widget.py
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QComboBox, QLineEdit,
-    QPushButton, QMessageBox, QHBoxLayout
+    QPushButton, QMessageBox, QHBoxLayout, QScrollArea
 )
+from PySide6.QtCore import Qt
 
 
 class CableWidget(QWidget):
     def __init__(self, parent):
         super().__init__(parent)
-        self.parent = parent
+        self.parent = parent  # 보통 QStackedWidget
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(10)
+
+        # 스크롤
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(self.scroll)
+
+        body = QWidget()
+        self.scroll.setWidget(body)
+
+        layout = QVBoxLayout(body)
         layout.setContentsMargins(30, 25, 30, 30)
         layout.setSpacing(12)
 
@@ -17,40 +32,43 @@ class CableWidget(QWidget):
         title.setStyleSheet("font-weight:900; font-size:18px;")
         layout.addWidget(title)
 
-        # 재질
+        self.mode = QComboBox()
+        self.mode.addItems(["자동선정(AUTO)", "수동입력(MANUAL)"])
+
+        # 프로파일은 저장만 해두고(향후 테이블 선택에 활용),
+        # ResultWidget에서 그대로 넘겨서 engineering.py가 쓰게 만들기 위한 필드
+        self.profile = QComboBox()
+        self.profile.addItems(["IEC 보수(Conservative)", "IEC 현실(1C)"])
+
         self.material = QComboBox()
         self.material.addItems(["Cu", "Al"])
 
-        # 절연
         self.insulation = QComboBox()
         self.insulation.addItems(["XLPE", "PVC"])
 
-        # 설치방법
         self.install = QComboBox()
         self.install.addItems(["트레이", "덕트", "매설"])
 
-        # 주위온도
         self.ambient = QLineEdit()
         self.ambient.setPlaceholderText("예: 30")
 
-        # 병렬 케이블 수
         self.parallel = QLineEdit()
         self.parallel.setPlaceholderText("예: 1")
 
-        # 단면적(mm2)  <<<<<<<<<< 추가
         self.section = QLineEdit()
-        self.section.setPlaceholderText("예: 95  (단위: mm²)")
+        self.section.setPlaceholderText("수동입력일 때만 사용 (예: 95)")
 
         for label, w in [
+            ("모드", self.mode),
+            ("테이블 프로파일", self.profile),
             ("재질", self.material),
             ("절연", self.insulation),
             ("설치방법", self.install),
             ("주위온도(°C)", self.ambient),
             ("병렬 케이블 수", self.parallel),
-            ("케이블 단면적(mm²)", self.section),
+            ("케이블 단면적 S(mm²)", self.section),
         ]:
-            lb = QLabel(label)
-            layout.addWidget(lb)
+            layout.addWidget(QLabel(label))
             layout.addWidget(w)
 
         btn_row = QHBoxLayout()
@@ -75,49 +93,80 @@ class CableWidget(QWidget):
 
         layout.addStretch(1)
 
+        self.mode.currentIndexChanged.connect(self._apply_mode_ui)
+        self._apply_mode_ui()
+
+    def _apply_mode_ui(self):
+        is_manual = "MANUAL" in self.mode.currentText()
+        self.section.setEnabled(is_manual)
+
     def go_back(self):
-        # 기본 입력으로 돌아가는 게 자연스러움
-        self.parent.setCurrentWidget(self.parent.input_page)
+        # input_page 있으면 거기로, 없으면 닫기
+        if hasattr(self.parent, "input_page"):
+            self.parent.setCurrentWidget(self.parent.input_page)
+        elif hasattr(self.parent, "home_page"):
+            self.parent.setCurrentWidget(self.parent.home_page)
+        else:
+            self.close()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        cd = getattr(self.parent, "cable_data", None)
+        if isinstance(cd, dict) and cd:
+            self.status.setText(
+                "현재 저장된 케이블 조건 있음\n"
+                f"- 모드: {cd.get('cable_mode')}\n"
+                f"- 재질/절연/설치: {cd.get('cable_material')} / {cd.get('cable_insulation')} / {cd.get('cable_install')}\n"
+                f"- 온도/병렬: {cd.get('cable_ambient')}℃ / {cd.get('cable_parallel')}\n"
+                f"- S(수동): {cd.get('cable_section_mm2_input')}"
+            )
+        else:
+            self.status.setText("저장된 케이블 조건 없음")
 
     def save(self):
-        # 숫자 필드 검증
         try:
             ambient = float(self.ambient.text().strip())
             parallel = int(float(self.parallel.text().strip()))
-            section = float(self.section.text().strip())
         except Exception:
-            QMessageBox.warning(self, "입력 오류", "주위온도/병렬/단면적은 숫자로 입력하세요.")
+            QMessageBox.warning(self, "입력 오류", "주위온도/병렬은 숫자로 입력하세요.")
             return
 
         if parallel <= 0:
             parallel = 1
-        if ambient <= -50 or ambient > 200:
-            QMessageBox.warning(self, "입력 오류", "주위온도 범위를 확인하세요.")
-            return
-        if section <= 0:
-            QMessageBox.warning(self, "입력 오류", "단면적(mm²)은 0보다 커야 합니다.")
-            return
 
+        mode = "MANUAL" if "MANUAL" in self.mode.currentText() else "AUTO"
+        profile = "IEC_REALISTIC_1C" if "현실" in self.profile.currentText() else "IEC_CONSERVATIVE"
+
+        section_mm2 = None
+        if mode == "MANUAL":
+            try:
+                section_mm2 = float(self.section.text().strip())
+            except Exception:
+                QMessageBox.warning(self, "입력 오류", "수동입력 모드에서는 단면적(S)을 숫자로 입력하세요.")
+                return
+            if section_mm2 <= 0:
+                QMessageBox.warning(self, "입력 오류", "단면적(S)은 0보다 커야 합니다.")
+                return
+
+        # ✅ 핵심: ResultWidget이 읽는 키와 100% 일치시키기(cable_ 접두사 고정)
         data = {
+            "cable_mode": mode,
+            "cable_table_profile": profile,
             "cable_material": self.material.currentText(),
             "cable_insulation": self.insulation.currentText(),
             "cable_install": self.install.currentText(),
             "cable_ambient": ambient,
             "cable_parallel": parallel,
-            "cable_section_mm2": section,  # << 저장 핵심
+            "cable_section_mm2_input": section_mm2,  # MANUAL일 때만 값
         }
 
         self.parent.cable_data = data
+
         self.status.setText(
             "저장 완료\n"
+            f"- 모드: {mode} / 프로파일: {profile}\n"
             f"- {data['cable_material']} / {data['cable_insulation']} / {data['cable_install']}\n"
-            f"- {data['cable_ambient']:.0f}℃ / 병렬 {data['cable_parallel']} / {data['cable_section_mm2']:.0f}mm²"
+            f"- {data['cable_ambient']:.0f}℃ / 병렬 {data['cable_parallel']}\n"
+            f"- S(수동): {('미사용(AUTO)' if section_mm2 is None else f'{section_mm2:.0f}mm²')}"
         )
         QMessageBox.information(self, "저장", "케이블 조건 저장 완료")
-
-
-    def go_home(self):
-        self.parent.setCurrentWidget(self.parent.home_page)
-
-    def go_basic(self):
-        self.parent.setCurrentWidget(self.parent.input_page)
