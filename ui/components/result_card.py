@@ -4,7 +4,9 @@ from PySide6.QtWidgets import QFrame, QVBoxLayout, QLabel
 class ResultCard(QFrame):
     def __init__(self, title: str):
         super().__init__()
-        self.setObjectName("ResultCard")
+
+        # style.py와 연결되는 핵심
+        self.setObjectName("Card")
 
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(16, 14, 16, 14)
@@ -14,18 +16,6 @@ class ResultCard(QFrame):
         self._title.setObjectName("CardTitle")
         self._layout.addWidget(self._title)
 
-        self.setStyleSheet("""
-        #ResultCard {
-            background: #ffffff;
-            border: 1px solid #e5e7eb;
-            border-radius: 14px;
-        }
-        #CardTitle {
-            font-size: 14px;
-            font-weight: 800;
-            color: #111827;
-        }
-        """)
-
     def add_widget(self, w):
+        # 본문 라벨들은 CardBody / Mono / Muted 등으로 외부에서 지정
         self._layout.addWidget(w)

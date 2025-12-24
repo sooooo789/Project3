@@ -16,13 +16,11 @@ class InputWidget(QWidget):
         outer.setContentsMargins(20, 20, 20, 20)
         outer.setSpacing(10)
 
-        # Scroll area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         outer.addWidget(self.scroll)
 
-        # Form container inside scroll
         body = QWidget()
         self.scroll.setWidget(body)
 
@@ -50,6 +48,7 @@ class InputWidget(QWidget):
 
         self.standard = QComboBox()
         self.standard.addItems(["KESC", "IEC"])
+        self.standard.setCurrentText("KESC")
 
         self.dt = QLineEdit()
         self.dt.setPlaceholderText("기본 1.0")
@@ -102,14 +101,18 @@ class InputWidget(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         cd = getattr(self.parent, "cable_data", None)
-        saved = bool(cd) and (cd.get("material") is not None or cd.get("section_mm2") is not None)
+        saved = False
+        if isinstance(cd, dict) and cd:
+            saved = any(
+                (cd.get(k) is not None and str(cd.get(k)).strip() != "")
+                for k in ("material", "insulation", "install", "parallel", "ambient", "cable_mode", "section_mm2_input")
+            )
         self.cable_state.setText(
             "케이블 조건 저장: 있음" if saved
             else "케이블 조건 저장: 없음 (케이블/열상승은 계산 불가로 처리될 수 있음)"
         )
 
     def go_home(self):
-        # home_page가 없으면 기본 입력 페이지로 fallback
         if hasattr(self.parent, "home_page"):
             self.parent.setCurrentWidget(self.parent.home_page)
         elif hasattr(self.parent, "input_page"):
@@ -147,9 +150,6 @@ class InputWidget(QWidget):
             QMessageBox.warning(self, "입력 오류", "숫자 형식이 올바르지 않습니다.")
             return
 
-        # 케이블 조건은 data에 섞지 않고, ResultWidget이 parent.cable_data를 직접 읽도록 고정
         if hasattr(self.parent, "result_page"):
             self.parent.result_page.run_calculation(data)
-
-        if hasattr(self.parent, "result_page"):
             self.parent.setCurrentWidget(self.parent.result_page)

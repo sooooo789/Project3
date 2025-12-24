@@ -1,5 +1,6 @@
 import sys
 from PySide6.QtWidgets import QApplication, QStackedWidget
+from PySide6.QtGui import QFontDatabase, QFont
 
 from ui.input_widget import InputWidget
 from ui.cable_widget import CableWidget
@@ -9,8 +10,18 @@ from ui.detail_result_widget import DetailResultWidget
 from utils.style import APP_STYLE
 
 
+def set_app_font(app: QApplication):
+    QFontDatabase.addApplicationFont("assets/fonts/PretendardStd-Regular.otf")
+    QFontDatabase.addApplicationFont("assets/fonts/PretendardStd-Bold.otf")
+
+    font = QFont("PretendardStd")
+    font.setPointSize(10)
+    app.setFont(font)
+
+
 def main():
     app = QApplication(sys.argv)
+    set_app_font(app)
     app.setStyleSheet(APP_STYLE)
 
     stack = QStackedWidget()
@@ -36,8 +47,8 @@ def main():
     stack.resize(1100, 800)
     stack.show()
 
-    sys.exit(app.exec())
+    return app.exec()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

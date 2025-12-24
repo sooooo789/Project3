@@ -1,8 +1,13 @@
+# ui/detail_result_widget.py
+import os
+import json
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-    QScrollArea, QStackedWidget
+    QScrollArea, QStackedWidget, QComboBox, QFrame
 )
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
+
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
@@ -13,6 +18,7 @@ from analysis.evt_analysis import fit_gev
 from analysis.peak_duration import peak_duration_analysis
 from analysis.risk_score import calculate_operation_risk, operation_risk_level
 from analysis.protection_tcc import tcc_curve, tcc_protection_margin
+
 from ui.components.result_card import ResultCard
 from utils.plot_config import set_korean_font
 
@@ -24,10 +30,34 @@ class DetailResultWidget(QWidget):
         super().__init__(parent)
         set_korean_font()
 
+        # 카드 안 "제목/라벨" 회색줄(글자 뒤 배경) 제거 핵심:
+        # APP_STYLE의 QWidget background-color가 QLabel에도 먹어서 카드(흰색) 위에 줄처럼 보임.
+        # 여기서 QLabel 배경을 투명으로 강제해서 카드 배경(흰색)이 그대로 보이게 함.
+        self.setStyleSheet("QLabel { background: transparent; }")
+
+        # =========================
+        # Helpers (회색 줄배경/하이라이트 제거)
+        # =========================
+        def _as_plain_block(label: QLabel, object_name: str, bigger: bool = False):
+            label.setObjectName(object_name)
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.PlainText)
+            label.setAutoFillBackground(False)
+            if bigger:
+                label.setStyleSheet("background: transparent; font-size: 14px; line-height: 1.35;")
+            else:
+                label.setStyleSheet("background: transparent;")
+
+        # =========================
+        # Layout: Outer
+        # =========================
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 20, 20, 20)
         outer.setSpacing(10)
 
+        # =========================
+        # Navigation
+        # =========================
         nav = QWidget()
         nav_l = QHBoxLayout(nav)
         nav_l.setContentsMargins(0, 0, 0, 0)
@@ -38,92 +68,122 @@ class DetailResultWidget(QWidget):
 
         self.btn_over = QPushButton("요약")
         self.btn_chart = QPushButton("그래프")
-        self.btn_compare = QPushButton("이전과 비교")
+        self.btn_chart.setObjectName("PrimaryButton")
+
+        self.btn_over.clicked.connect(lambda: self.pages.setCurrentIndex(0))
+        self.btn_chart.clicked.connect(lambda: self.pages.setCurrentIndex(1))
+
+        self.baseline_combo = QComboBox()
+        self.baseline_combo.addItems([
+            "기준선: I_design(설계)",
+            "기준선: I_load(부하)",
+            "기준선: I_allow(30℃ 허용)",
+        ])
+        self.baseline_combo.currentIndexChanged.connect(self.on_baseline_changed)
 
         nav_l.addWidget(self.btn_to_result)
         nav_l.addSpacing(10)
         nav_l.addWidget(self.btn_over)
         nav_l.addWidget(self.btn_chart)
         nav_l.addStretch(1)
-        nav_l.addWidget(self.btn_compare)
+        nav_l.addWidget(self.baseline_combo)
         outer.addWidget(nav)
 
+        # =========================
+        # Pages
+        # =========================
         self.pages = QStackedWidget()
         outer.addWidget(self.pages)
 
-        self.btn_over.clicked.connect(lambda: self.pages.setCurrentIndex(0))
-        self.btn_chart.clicked.connect(lambda: self.pages.setCurrentIndex(1))
-        self.btn_compare.clicked.connect(self.refresh_compare)
-
-        # 요약(스크롤)
+        # =========================
+        # Overview Page
+        # =========================
         self.over_scroll = QScrollArea()
         self.over_scroll.setWidgetResizable(True)
+        self.over_scroll.setFrameShape(QFrame.NoFrame)
+        self.over_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.pages.addWidget(self.over_scroll)
 
         over_body = QWidget()
         self.over_scroll.setWidget(over_body)
         over = QVBoxLayout(over_body)
         over.setContentsMargins(30, 20, 30, 30)
-        over.setSpacing(12)
+        over.setSpacing(14)
 
+        # ---- Hard Engineering Card
         self.equip_card = ResultCard("설비 판정 (Hard Engineering)")
         self.equip_title = QLabel("")
-        self.equip_title.setWordWrap(True)
-        self.equip_title.setStyleSheet("font-weight:900; font-size:16px;")
+        self.equip_title.setObjectName("H1")
+        self.equip_title.setTextFormat(Qt.PlainText)
+        self.equip_title.setAutoFillBackground(False)
+        self.equip_title.setStyleSheet("background: transparent;")
+
         self.equip_desc = QLabel("")
-        self.equip_desc.setWordWrap(True)
-        self.equip_desc.setStyleSheet("color:#111827;")
+        _as_plain_block(self.equip_desc, "Muted")
+
         self.equip_card.add_widget(self.equip_title)
         self.equip_card.add_widget(self.equip_desc)
         over.addWidget(self.equip_card)
 
-        self.risk_card = ResultCard("운전 위험도 평가 (Data-based, 참고 지표)")
+        # Divider
+        div = QFrame()
+        div.setObjectName("Divider")
+        div.setFixedHeight(1)
+        over.addWidget(div)
+
+        # ---- Risk Card (텍스트 블록 방식)
+        self.risk_card = ResultCard("운전 위험도 평가 (참고 지표)")
         self.risk_head = QLabel("")
-        self.risk_head.setStyleSheet("font-weight:900; font-size:16px;")
+        self.risk_head.setObjectName("H1")
+        self.risk_head.setTextFormat(Qt.PlainText)
+        self.risk_head.setAutoFillBackground(False)
+        self.risk_head.setStyleSheet("background: transparent;")
+
+        self.meta_line = QLabel("")
+        _as_plain_block(self.meta_line, "Muted")
 
         self.break_notice = QLabel(
-            "본 점수는 위험도 점수로,\n"
-            "값이 높을수록 운전 리스크가 큼을 의미합니다.\n"
-            "보호(TCC) 점수는 보호 부족 시에만 위험 가중으로 반영됩니다."
+            "본 평가는 운전 리스크 참고 지표입니다.\n"
+            "DEMO 데이터 사용 시 정량 점수 및 DB 반영은 비활성화됩니다."
         )
-        self.break_notice.setWordWrap(True)
-        self.break_notice.setStyleSheet("color:#111827; font-size:13px;")
+        _as_plain_block(self.break_notice, "Muted")
 
-        self.risk_policy = QLabel(
-            "※ 운전 위험도 평가는 설비 판정(Hard)과 독립적인 참고 지표입니다."
-        )
-        self.risk_policy.setWordWrap(True)
-        self.risk_policy.setStyleSheet("color:#111827; font-size:13px;")
+        self.risk_note = QLabel("")
+        _as_plain_block(self.risk_note, "Muted")
 
         self.risk_break = QLabel("")
-        self.risk_break.setWordWrap(True)
-        self.risk_break.setStyleSheet("color:#111827;")
+        _as_plain_block(self.risk_break, "Mono")
 
         self.risk_card.add_widget(self.risk_head)
+        self.risk_card.add_widget(self.meta_line)
         self.risk_card.add_widget(self.break_notice)
-        self.risk_card.add_widget(self.risk_policy)
+        self.risk_card.add_widget(self.risk_note)
         self.risk_card.add_widget(self.risk_break)
         over.addWidget(self.risk_card)
 
+        # ---- Text Summary
         self.text_card = ResultCard("해석 요약")
         self.text_label = QLabel("")
-        self.text_label.setWordWrap(True)
-        self.text_label.setStyleSheet("color:#111827;")
+        _as_plain_block(self.text_label, "AnalysisText", bigger=True)
         self.text_card.add_widget(self.text_label)
         over.addWidget(self.text_card)
 
+        # ---- Compare
         self.compare_card = ResultCard("판정 이력 비교")
         self.compare_label = QLabel("이전 판정 데이터 없음")
-        self.compare_label.setWordWrap(True)
-        self.compare_label.setStyleSheet("color:#111827;")
+        _as_plain_block(self.compare_label, "Muted")
         self.compare_card.add_widget(self.compare_label)
         over.addWidget(self.compare_card)
 
         over.addStretch(1)
 
-        # 그래프(스크롤)
+        # =========================
+        # Chart Page
+        # =========================
         self.chart_scroll = QScrollArea()
         self.chart_scroll.setWidgetResizable(True)
+        self.chart_scroll.setFrameShape(QFrame.NoFrame)
+        self.chart_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.pages.addWidget(self.chart_scroll)
 
         chart_body = QWidget()
@@ -133,14 +193,45 @@ class DetailResultWidget(QWidget):
         chart.setSpacing(12)
 
         self.figure = Figure(figsize=(8, 10))
+        self.figure.patch.set_facecolor("white")
         self.canvas = FigureCanvas(self.figure)
+        self.canvas.setStyleSheet("background: #FFFFFF; border-radius: 14px;")
         chart.addWidget(self.canvas)
         chart.addStretch(1)
 
-        self.input_data = {}
-        self.results = {}
-        self.load_series = None
+        # =========================
+        # State
+        # =========================
+        self.input_data = None
+        self.results = None
         self.dt = 1.0
+        self.load_series = None
+        self._baseline_key = "I_design"
+
+    def _prev_path(self) -> str:
+        base = os.path.dirname(os.path.dirname(__file__))
+        return os.path.join(base, "data", "prev_judgement.json")
+
+    def _load_prev(self):
+        path = self._prev_path()
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def on_baseline_changed(self, idx: int):
+        if idx == 0:
+            self._baseline_key = "I_design"
+        elif idx == 1:
+            self._baseline_key = "I_load"
+        else:
+            self._baseline_key = "I_allow_hard"
+
+        if self.results is not None and self.load_series is not None:
+            self.run_analysis()
 
     def load_data(self, input_data, results):
         self.input_data = input_data or {}
@@ -149,13 +240,23 @@ class DetailResultWidget(QWidget):
         dt = float(self.results.get("dt", 1.0))
         self.dt = dt if dt > 0 else 1.0
 
-        base = float(self.input_data.get("I_load", 0.0))
+        base = float(self.results.get("I_load", self.results.get("limit_current", 0.0)) or 0.0)
         if base <= 0:
-            base = float(self.results.get("limit_current", 100.0))
+            base = 100.0
 
-        self.load_series = np.array(
-            [base + np.random.randn() * base * 0.05 for _ in range(300)]
-        ).flatten()
+        seed = int(self.results.get("demo_seed", 2025))
+        rng = np.random.default_rng(seed)
+        self.load_series = (base + rng.normal(0.0, base * 0.05, size=300)).astype(float)
+
+        self.results["data_source_note"] = f"데모 시계열(시뮬레이션, seed={seed})"
+        self.results["is_demo"] = True
+
+        if self.results.get("I_design") is not None:
+            self.baseline_combo.setCurrentIndex(0)
+            self._baseline_key = "I_design"
+        else:
+            self.baseline_combo.setCurrentIndex(1)
+            self._baseline_key = "I_load"
 
         QTimer.singleShot(0, self.run_analysis)
 
@@ -191,36 +292,80 @@ class DetailResultWidget(QWidget):
         except Exception:
             return np.zeros_like(xgrid, dtype=float)
 
+    def _get_baseline(self):
+        def _f(key):
+            try:
+                v = self.results.get(key, None)
+                return float(v) if v is not None else None
+            except Exception:
+                return None
+
+        I_load = _f("I_load")
+        I_design = _f("I_design")
+        I_allow = _f("I_allow_hard")
+
+        baseline = None
+        label = ""
+
+        if self._baseline_key == "I_allow_hard":
+            baseline = I_allow
+            label = "I_allow(30℃ 허용)"
+        elif self._baseline_key == "I_load":
+            baseline = I_load
+            label = "I_load(부하)"
+        else:
+            baseline = I_design
+            label = "I_design(설계)"
+
+        if baseline is None:
+            baseline = I_load
+            label = "I_load(부하)"
+            if baseline is None:
+                baseline = float(np.mean(self.load_series))
+                label = "평균(대체)"
+
+        return baseline, label, I_load, I_design, I_allow
+
+    @staticmethod
+    def _bootstrap_evt_ci(series_evt, baseline, n_boot=200, seed=2025):
+        rng = np.random.default_rng(int(seed))
+        x = np.array(series_evt, dtype=float)
+        if x.size < 8:
+            return None, None, None
+
+        probs = []
+        for _ in range(int(n_boot)):
+            sample = rng.choice(x, size=x.size, replace=True)
+            try:
+                gev = fit_gev(sample, baseline)
+                p = float(gev.get("exceed_prob", np.nan))
+                if np.isfinite(p):
+                    probs.append(min(max(p, 0.0), 1.0))
+            except Exception:
+                continue
+
+        if len(probs) < 20:
+            return None, None, None
+
+        probs = np.array(probs, dtype=float)
+        return float(np.quantile(probs, 0.025)), float(np.quantile(probs, 0.975)), float(np.mean(probs))
+
     def run_analysis(self):
+        if self.results is None or self.load_series is None:
+            return
+
         y = self.load_series
         dt = self.dt
         t = np.arange(len(y)) * dt
 
-        DESIGN_LIMIT = self.results.get("limit_current")
-        try:
-            DESIGN_LIMIT = float(DESIGN_LIMIT)
-        except Exception:
-            DESIGN_LIMIT = float(np.mean(y))
-
-        if float(np.min(y)) == float(np.max(y)):
-            y = y + np.random.randn(len(y)) * 0.01
+        baseline, baseline_label, I_load, I_design, I_allow = self._get_baseline()
 
         LIMIT_TIME = 5.0
 
-        hard_status = self.results.get("equipment_status", "")
-        equip_final_line = self.results.get("equipment_final_line", "")
-        self.equip_title.setText(equip_final_line)
+        hard_code = self.results.get("equipment_status", "")
+        self.equip_title.setText(self.results.get("equipment_final_line", ""))
+        self.equip_desc.setText(self.results.get("equipment_final_sub", ""))
 
-        cable_hard = self.results.get("cable_hard", {})
-        cable_op = self.results.get("cable_op", {})
-        thermal = self.results.get("thermal", {})
-
-        self.equip_desc.setText(
-            "케이블 판정(설비 기준): " + str(cable_hard.get("status", "-")) + "\n"
-            "열상승(단열식): " + str(thermal.get("status", "-"))
-        )
-
-        # EVT 표본(블록맥시마)
         block_size = max(int(round(10.0 / dt)), 5)
         n_blocks = len(y) // block_size
 
@@ -228,45 +373,79 @@ class DetailResultWidget(QWidget):
             blocks = y[:n_blocks * block_size].reshape(n_blocks, block_size)
             series_evt = blocks.max(axis=1)
             evt_method = f"Block Maxima (block={block_size} samples, n={len(series_evt)})"
+            evt_def = "EVT(블록 최대값 기준) 초과확률  P(block max > 기준선)"
+            evt_kind = "BLOCK_MAX"
         else:
             series_evt = y.copy()
             evt_method = f"Raw series (fallback, n={len(series_evt)})"
+            evt_def = "EVT(원시 시계열 기준) 초과확률  P(sample > 기준선)"
+            evt_kind = "RAW"
 
-        observed_exceed = float(np.mean(y > DESIGN_LIMIT))
+        observed_exceed_sample = float(np.mean(y > baseline))
+        observed_exceed_evt = float(np.mean(series_evt > baseline))
 
-        gev = fit_gev(series_evt, DESIGN_LIMIT)
+        gev = fit_gev(series_evt, baseline)
         c = float(gev["shape"])
         loc = float(gev["loc"])
         scale = float(gev["scale"])
+
         evt_prob = float(gev.get("exceed_prob", 0.0))
         evt_prob = min(max(evt_prob, 0.0), 1.0)
 
-        durations = peak_duration_analysis(y, DESIGN_LIMIT)
+        ci_low, ci_high, ci_mean = self._bootstrap_evt_ci(
+            series_evt=series_evt,
+            baseline=baseline,
+            n_boot=200,
+            seed=int(self.results.get("demo_seed", 2025)),
+        )
+
+        durations = peak_duration_analysis(y, baseline)
         durations = durations if isinstance(durations, np.ndarray) else np.array([])
         durations_sec = durations.astype(float) * dt if durations.size > 0 else np.array([])
         max_duration = float(durations_sec.max()) if durations_sec.size > 0 else 0.0
 
-        breaker_ok = bool(self.results.get("breaker_ok", False))
+        breaker_ok = (self.results.get("breaker_result") == "적합")
 
         pickup = self.results.get("breaker_pickup")
-        TMS = self.results.get("breaker_tms")
+        tms = self.results.get("breaker_tms")
         Isc_A = self.results.get("Isc_A")
 
         tcc_margin = None
         tcc_available = True
+        t_trip = self.results.get("t_trip_est", None)
+
         try:
             pickup = float(pickup)
-            TMS = float(TMS)
+            tms = float(tms)
             Isc_A = float(Isc_A)
-            if pickup <= 0 or TMS <= 0 or Isc_A <= 0:
+            if pickup <= 0 or tms <= 0 or Isc_A <= 0:
                 tcc_available = False
         except Exception:
             tcc_available = False
 
         if tcc_available:
-            tcc_margin = tcc_protection_margin(Isc_A, max_duration, pickup, TMS)
+            tcc_margin = tcc_protection_margin(Isc_A, max_duration, pickup, tms)
+            if t_trip is None:
+                try:
+                    t_trip = float(tcc_curve(np.array([Isc_A]), pickup, tms)[0])
+                except Exception:
+                    t_trip = None
         else:
             tcc_margin = None
+            t_trip = None
+
+        # t_clear_* 먼저 파싱(아래 note_lines에서 쓰임)
+        t_clear_input = self.results.get("t_clear_input", None)
+        t_clear_used = self.results.get("t_clear_used", None)
+        t_clear_policy = self.results.get("t_clear_policy", "NONE")
+        try:
+            t_clear_input = float(t_clear_input) if t_clear_input is not None else None
+        except Exception:
+            t_clear_input = None
+        try:
+            t_clear_used = float(t_clear_used) if t_clear_used is not None else None
+        except Exception:
+            t_clear_used = None
 
         risk = calculate_operation_risk(
             evt_prob=evt_prob,
@@ -274,68 +453,106 @@ class DetailResultWidget(QWidget):
             duration_limit=LIMIT_TIME,
             tcc_margin=tcc_margin,
             breaker_ok=breaker_ok,
-            hard_status=hard_status
+            hard_status=hard_code,
+            is_demo=bool(self.results.get("is_demo", False)),
         )
 
-        level = operation_risk_level(risk["total"])
-        self.risk_head.setText(f"운전 위험도: {level}  |  위험도 점수 {int(risk['total'])}/100")
+        note = self.results.get("data_source_note", "")
+        is_demo = bool(self.results.get("is_demo", False))
+        demo_tag = " [DEMO]" if is_demo else ""
 
-        prot_note = ""
-        if risk["protection_score"] is None:
-            prot_text = "N/A"
-            prot_note = "보호 위험 점수: N/A (점수 제외)"
+        if is_demo:
+            level = "참고(데모)"
+            self.risk_head.setText(f"운전 위험도: {level}{demo_tag} | 점수 비활성")
         else:
-            prot_text = f"{risk['protection_score']:.1f}/20"
-            if float(risk["protection_score"]) <= 0.01:
-                prot_note = "보호 위험 점수: 0에 가까움(보호 부족에 따른 위험 가중 없음)"
-            else:
-                prot_note = "보호 위험 점수: 값이 클수록 보호 부족으로 인한 위험 가중이 큼"
+            level = operation_risk_level(risk["total"])
+            self.risk_head.setText(f"운전 위험도: {level} | 점수 {int(risk['total'])}/100{demo_tag}")
+
+        meta_parts = []
+        if I_load is not None:
+            meta_parts.append(f"I_load={I_load:.0f}A")
+        if I_design is not None:
+            meta_parts.append(f"I_design={I_design:.0f}A")
+        if I_allow is not None:
+            meta_parts.append(f"I_allow(30℃)={I_allow:.0f}A")
+        meta_parts.append(f"선택 기준선={baseline_label}:{baseline:.0f}A")
+        meta_parts.append(f"EVT표본={len(series_evt)} ({evt_kind})")
+        if note:
+            meta_parts.append(note)
+        self.meta_line.setText(" | ".join(meta_parts))
+
+        # ---- 텍스트 블록 채우기(운전 위험도)
+        prot_text = "N/A" if risk["protection_score"] is None else f"{risk['protection_score']:.1f}/20"
+        total_text = "비활성" if is_demo else f"{risk['total']:.1f}/100"
 
         self.risk_break.setText(
             f"- EVT 위험 점수: {risk['evt_score']:.1f}/40\n"
             f"- 지속시간 위험 점수: {risk['time_score']:.1f}/40\n"
             f"- 보호 위험 점수(TCC): {prot_text}\n"
-            f"  · {prot_note}\n"
+            f"- 총점: {total_text}\n"
             f"  · {risk.get('protection_note', '')}"
         )
 
-        op_lines = []
-        op_lines.append("케이블 운영 조건 평가(Optional)")
-        if cable_op.get("status") in ("평가 불가", "계산 불가"):
-            op_lines.append(f"- {cable_op.get('status')}: {cable_op.get('reason')}")
+        note_lines = []
+        note_lines.append(f"기준선 정의: {baseline_label} = {baseline:.0f}A")
+        note_lines.append(evt_def)
+        note_lines.append(f"관측 초과율(샘플): {observed_exceed_sample:.2%}")
+        note_lines.append(f"관측 초과율(EVT표본): {observed_exceed_evt:.2%}")
+        if ci_low is not None and ci_high is not None:
+            note_lines.append(f"EVT 초과확률(모델): {evt_prob:.2%} | 95% CI [{ci_low:.2%}, {ci_high:.2%}] (n=200)")
         else:
-            op_lines.append(f"- 최근 평균온도 {cable_op.get('ambient'):.1f}℃")
-            if cable_op.get("I_allow_total") is not None:
-                op_lines.append(f"- 보정 후 허용전류: {cable_op.get('I_allow_total'):,.0f} A")
-            op_lines.append("- 운전 여유 감소")
+            note_lines.append(f"EVT 초과확률(모델): {evt_prob:.2%} | CI 계산 불가(표본 부족/실패)")
+
+        if tcc_available and (t_trip is not None) and (t_clear_input is not None) and (t_trip > t_clear_input):
+            note_lines.append(f"주의: TCC 추정({t_trip:.2f}s) > 입력({t_clear_input:.2f}s) → t_used=max 적용")
+
+        if t_clear_used is not None:
+            note_lines.append(f"단락열 적용 차단시간(t_used): {t_clear_used:.3f}s ({t_clear_policy})")
+
+        if is_demo:
+            note_lines.append("DEMO: 시뮬레이션 데이터이므로 정량 점수/DB 반영 비활성(그래프 UI 확인용)")
+
+        self.risk_note.setText("\n".join(note_lines))
 
         bm_explain = (
-            "※ Block Maxima는 각 블록의 최대값을 사용하므로, 초과확률이 보수적으로 나올 수 있습니다."
+            "Block Maxima는 '블록의 최대값'으로 표본을 구성합니다. "
+            "따라서 샘플 초과율과 EVT 초과확률은 의미가 다를 수 있습니다."
             if "Block Maxima" in evt_method else
-            "※ Raw fallback은 표본 수 부족으로 Block Maxima를 적용하지 못한 경우입니다."
+            "표본 수 부족으로 Raw fallback을 사용합니다."
         )
 
+        # ---- 해석 요약(통으로 유지)
         self.text_label.setText(
-            f"EVT 초과확률: {evt_prob:.2%}\n"
-            f"(전류 기준: 설계전류 {float(DESIGN_LIMIT):.0f} A 초과 확률, GEV 추정)\n\n"
-            f"지속시간 판정:\n"
-            f"- 설계 기준: {LIMIT_TIME:.1f} s\n"
-            f"- 관측 최대 지속: {max_duration:.1f} s\n\n"
-            f"관측 초과율(원시 시계열): {observed_exceed:.2%}\n"
+            f"선택 기준선: {baseline_label} = {baseline:.0f} A\n"
+            f"{note}\n\n"
+            f"{evt_def}\n"
+            f"- EVT 초과확률(모델): {evt_prob:.2%}\n"
+            f"- 관측 초과율(샘플): {observed_exceed_sample:.2%}\n"
+            f"- 관측 초과율(EVT표본): {observed_exceed_evt:.2%}\n"
             f"EVT 적용 방식: {evt_method}\n"
-            f"{bm_explain}\n\n"
-            + "\n".join(op_lines)
+            f"{bm_explain}\n"
+            f"- 표본수(블록수): {len(series_evt)}\n"
+            f"- 외삽 위험: 기준선이 관측범위 밖이면 불확실 증가\n\n"
+            f"지속시간 판정:\n"
+            f"- 기준: {LIMIT_TIME:.1f} s\n"
+            f"- 관측 최대 지속: {max_duration:.1f} s\n\n"
+            f"단락열 차단시간:\n"
+            f"- 입력 t_clear: {('-' if t_clear_input is None else f'{t_clear_input:.3f}s')}\n"
+            f"- TCC 추정: {('-' if t_trip is None else f'{t_trip:.3f}s')}\n"
+            f"- 적용 t_used: {('-' if t_clear_used is None else f'{t_clear_used:.3f}s')} ({t_clear_policy})"
         )
 
-        # 그래프
+        # ===== 그래프(기존 유지) =====
         self.figure.clear()
 
         ax1 = self.figure.add_subplot(311)
         ax1.plot(t, y)
-        ax1.axhline(DESIGN_LIMIT, linestyle="--", label="설계 기준")
+        ax1.axhline(baseline, linestyle="--", label=f"기준선({baseline_label})")
         ax1.set_title("부하 전류 시계열")
         ax1.set_xlabel("Time (s)")
         ax1.set_ylabel("Current (A)")
+        if note:
+            ax1.text(0.02, 0.92, note, transform=ax1.transAxes, fontsize=9)
         ax1.legend()
 
         ax2 = self.figure.add_subplot(312)
@@ -353,46 +570,43 @@ class DetailResultWidget(QWidget):
             pdf_plot = pdf
 
         ax2.plot(xgrid, pdf_plot, linewidth=2, label="GEV PDF (clipped)")
-        ax2.axvline(DESIGN_LIMIT, linestyle="--", label="설계 기준")
+        ax2.axvline(baseline, linestyle="--", label=f"기준선({baseline_label})")
         ax2.set_title(f"EVT (GEV) 분포 - {evt_method}")
         ax2.set_xlabel("Current (A)")
         ax2.set_ylabel("Density")
         ax2.text(0.02, 0.90, f"fit: c={c:.3f}, loc={loc:.1f}, scale={scale:.3f}", transform=ax2.transAxes, fontsize=9)
-        ax2.text(0.02, 0.80, f"EVT P(I>Limit)={evt_prob:.2%}", transform=ax2.transAxes, fontsize=9)
+        ax2.text(0.02, 0.80, f"P_model(exceed)={evt_prob:.2%}", transform=ax2.transAxes, fontsize=9)
+        ax2.text(0.02, 0.70, f"P_obs(sample)={observed_exceed_sample:.2%}", transform=ax2.transAxes, fontsize=9)
+        if ci_low is not None and ci_high is not None:
+            ax2.text(0.02, 0.60, f"CI95% [{ci_low:.2%},{ci_high:.2%}] (boot n=200)", transform=ax2.transAxes, fontsize=9)
         ax2.legend()
 
         ax3 = self.figure.add_subplot(313)
         ax3.set_xlabel("전류 (A)")
         ax3.set_ylabel("차단 시간 (s)")
-        ax3.set_title("보호계전 TCC 참고 분석 (Icu 적합 가정)")
-        ax3.text(
-            0.02, 0.90,
-            "※ 본 그래프는 참고용입니다.\n"
-            "   보호 위험 점수는 보호 부족 시에만 위험 가중으로 반영됩니다.",
-            transform=ax3.transAxes, fontsize=9
-        )
+        ax3.set_title("보호계전 TCC 참고 분석 (PASS + 계산 가능 시에만 점수 반영)")
+        ax3.text(0.02, 0.90, "본 그래프는 참고용입니다.", transform=ax3.transAxes, fontsize=9)
 
         if tcc_available:
             Imax = max(float(np.max(y)), Isc_A, pickup * 2.0)
             I = np.logspace(np.log10(pickup * 1.05), np.log10(Imax * 2.0), 300)
-            T = tcc_curve(I, pickup, TMS)
+            T = tcc_curve(I, pickup, tms)
             ax3.loglog(I, T, label="차단기 TCC")
 
-            if Isc_A > pickup:
-                t_trip = float(tcc_curve(np.array([Isc_A]), pickup, TMS)[0])
-                ax3.scatter([Isc_A], [t_trip], color="red", zorder=5, label="● 단락전류 Isc")
+            if Isc_A > 0 and t_trip is not None:
+                ax3.scatter([Isc_A], [t_trip], zorder=5, label="● 단락전류 Isc")
                 ax3.text(0.02, 0.72, f"예상 차단시간(TCC): {t_trip:.2f} s", transform=ax3.transAxes, fontsize=9)
+                ax3.text(0.02, 0.64, f"pickup={pickup:.1f}A, TMS={tms:.3f}", transform=ax3.transAxes, fontsize=9)
+
+                if t_clear_input is not None:
+                    ax3.text(0.02, 0.56, f"입력 t_clear: {t_clear_input:.2f} s", transform=ax3.transAxes, fontsize=9)
+                if t_clear_used is not None:
+                    ax3.text(0.02, 0.48, f"적용 t_used: {t_clear_used:.2f} s ({t_clear_policy})", transform=ax3.transAxes, fontsize=9)
         else:
-            ax3.text(0.02, 0.72, "TCC 파라미터 부족으로 그래프 평가 불가", transform=ax3.transAxes, fontsize=9)
+            ax3.text(0.02, 0.72, "TCC 파라미터 부족(pickup/TMS/Isc)으로 그래프 평가 불가", transform=ax3.transAxes, fontsize=9)
 
         if breaker_ok is False:
-            for line in ax3.get_lines():
-                try:
-                    line.set_color("gray")
-                    line.set_alpha(0.35)
-                except Exception:
-                    pass
-            ax3.text(0.02, 0.62, "Icu 부적합: 본 TCC 해석은 의미가 제한됩니다.", transform=ax3.transAxes, fontsize=9)
+            ax3.text(0.02, 0.40, "Icu 부적합: 본 TCC 해석은 의미가 제한됩니다.", transform=ax3.transAxes, fontsize=9)
 
         ax3.legend()
 
@@ -400,56 +614,65 @@ class DetailResultWidget(QWidget):
         self.figure.subplots_adjust(hspace=0.65)
         self.canvas.draw()
 
-        self.update_db_risk(risk_total=float(risk["total"]))
-        self.refresh_compare()
-
-    def update_db_risk(self, risk_total: float):
         assessment_id = self.results.get("assessment_id")
-        if assessment_id is None:
-            return
-        update_assessment_risk(
-            assessment_id=assessment_id,
-            risk_internal=risk_total,
-            risk_external=None
-        )
-
-    def refresh_compare(self):
         asset_id = self.results.get("asset_id")
-        if asset_id is None:
-            self.compare_label.setText("이전 판정 데이터 없음")
-            return
 
-        rows = get_last_two_assessments(asset_id)
-        if len(rows) != 2:
-            self.compare_label.setText("이전 판정 데이터 없음")
-            return
-
-        curr = rows[0]
-        prev = rows[1]
-
-        _, curr_hard, curr_risk, _ = curr
-        _, prev_hard, prev_risk, _ = prev
-
-        delta = None
         try:
-            if curr_risk is not None and prev_risk is not None:
-                delta = float(curr_risk) - float(prev_risk)
+            if (not is_demo) and (assessment_id is not None):
+                update_assessment_risk(
+                    assessment_id=assessment_id,
+                    risk_internal=float(risk["total"]),
+                    risk_external=0.0
+                )
         except Exception:
-            delta = None
+            pass
 
-        if delta is None:
-            arrow = "→"
-            delta_txt = "-"
-        else:
-            arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "→")
-            delta_txt = f"{delta:+.1f}"
+        compare_text = "이전 판정 데이터 없음"
 
-        txt = (
-            "이전 판정 대비 변화\n"
-            f"- 설비 판정: {prev_hard} → {curr_hard}\n"
-            f"- 위험도 점수: {prev_risk if prev_risk is not None else '-'} → {curr_risk if curr_risk is not None else '-'} ({arrow} {delta_txt})"
-        )
-        self.compare_label.setText(txt)
+        try:
+            if asset_id is not None:
+                rows = get_last_two_assessments(asset_id)
+                if isinstance(rows, (list, tuple)) and len(rows) == 2:
+                    curr = rows[0]
+                    prev = rows[1]
+
+                    _, curr_hard, curr_risk, _ = curr
+                    _, prev_hard, prev_risk, _ = prev
+
+                    delta = None
+                    if curr_risk is not None and prev_risk is not None:
+                        delta = float(curr_risk) - float(prev_risk)
+
+                    arrow = "→"
+                    if delta is not None:
+                        arrow = "▲" if delta > 0 else "▼" if delta < 0 else "→"
+                    delta_txt = f"{delta:+.1f}" if delta is not None else "-"
+
+                    cr = f"{float(curr_risk):.1f}" if curr_risk is not None else "-"
+                    pr = f"{float(prev_risk):.1f}" if prev_risk is not None else "-"
+
+                    compare_text = (
+                        "이전 판정 대비 변화(DB)\n"
+                        f"- 설비 판정: {prev_hard} → {curr_hard}\n"
+                        f"- 위험도 점수: {pr} → {cr} ({arrow} {delta_txt})"
+                    )
+        except Exception:
+            compare_text = "이전 판정 데이터 없음"
+
+        if compare_text == "이전 판정 데이터 없음":
+            prev_local = self._load_prev()
+            if isinstance(prev_local, dict) and prev_local:
+                compare_text = (
+                    "이전 판정 대비 변화(로컬)\n"
+                    f"- 규정판정: {prev_local.get('equipment_status', '-')} → {hard_code}\n"
+                    f"- 차단기: {prev_local.get('breaker_result', '-')} → {self.results.get('breaker_result', '-')}\n"
+                )
+
+        self.compare_label.setText(compare_text)
 
     def go_result(self):
-        self.parent().setCurrentWidget(self.parent().result_page)
+        p = self.parent()
+        if p is None:
+            return
+        if hasattr(p, "result_page"):
+            p.setCurrentWidget(p.result_page)

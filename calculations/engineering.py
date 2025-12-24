@@ -18,53 +18,37 @@ def breaker_judgement(I_sc_A, breaker_kA, standard):
     return "적합" if breaker_A >= I_sc_A * margin else "부적합"
 
 
-# ============================================================
-# 케이블 기준 테이블(프로파일 기반)
-# - 단위: (단면적 mm², 기준 허용전류 A)
-# - 기준조건 가정(샘플): 30℃, XLPE 90℃, 공기중/트레이 계열
-# ============================================================
 def cable_table_base(profile: str = "IEC_CONSERVATIVE"):
-    """
-    profile
-      - IEC_CONSERVATIVE : 보수(다심/보수조건 느낌. 값 낮음)
-      - IEC_REALISTIC_1C : 현실(단심 1C 공기중/트레이 flat formation 느낌. 값 큼)
-
-    주의:
-      - 이 테이블은 '기준값'이고, 실제 평가는 보정계수로 조정한다.
-    """
     p = str(profile).upper().strip()
+
+    if p == "KESC_DEFAULT":
+        return [
+            (25, 110),
+            (35, 135),
+            (50, 170),
+            (70, 215),
+            (95, 260),
+            (120, 300),
+            (150, 340),
+            (185, 385),
+            (240, 450),
+            (300, 520),
+            (400, 610),
+            (500, 690),
+            (630, 800),
+        ]
 
     if p == "IEC_REALISTIC_1C":
         return [
-            (25, 190),
-            (35, 235),
-            (50, 285),
-            (70, 355),
-            (95, 430),
-            (120, 490),
-            (150, 560),
-            (185, 640),
-            (240, 780),
-            (300, 900),
-            (400, 1080),
-            (500, 1250),
-            (630, 1450),
+            (25, 190), (35, 235), (50, 285), (70, 355),
+            (95, 430), (120, 490), (150, 560), (185, 640),
+            (240, 780), (300, 900), (400, 1080), (500, 1250), (630, 1450),
         ]
 
     return [
-        (25, 130),
-        (35, 160),
-        (50, 195),
-        (70, 245),
-        (95, 300),
-        (120, 345),
-        (150, 400),
-        (185, 455),
-        (240, 540),
-        (300, 630),
-        (400, 750),
-        (500, 860),
-        (630, 1000),
+        (25, 130), (35, 160), (50, 195), (70, 245),
+        (95, 300), (120, 345), (150, 400), (185, 455),
+        (240, 540), (300, 630), (400, 750), (500, 860), (630, 1000),
     ]
 
 
@@ -85,11 +69,6 @@ def _group_factor(parallel: int) -> float:
 
 
 def _temp_factor_30_base(ambient_c: float) -> float:
-    """
-    30℃ 기준의 간이 온도 보정(형님 버전 유지)
-    - 30℃ 이하: 1.0
-    - 30℃ 초과: 1%/℃ 감소, 하한 0.70
-    """
     if ambient_c <= 30.0:
         return 1.0
     return max(0.7, 1.0 - 0.01 * (ambient_c - 30.0))
@@ -112,20 +91,18 @@ def _correction_factors(material, insulation, install, ambient, parallel):
 
 
 def _resolve_table(table, table_profile, standard):
-    """
-    table 우선.
-    table이 None이면 table_profile 우선.
-    table_profile도 None이면:
-      - IEC: IEC_CONSERVATIVE
-      - KESC: IEC_CONSERVATIVE (기본은 보수로 동일 적용)
-    """
     if table is not None:
         return table, (table_profile or "CUSTOM")
 
-    prof = table_profile
-    if prof is None:
-        st = str(standard).upper()
-        prof = "IEC_CONSERVATIVE" if st in ("IEC", "KESC") else "IEC_CONSERVATIVE"
+    st = str(standard).upper().strip()
+    prof = (table_profile or "").upper().strip() if table_profile is not None else None
+
+    # 1번 정책: KESC면 테이블 프로파일을 무조건 KESC_DEFAULT로 강제(IEC 혼입 원천 차단)
+    if st == "KESC":
+        prof = "KESC_DEFAULT"
+    else:
+        if not prof:
+            prof = "IEC_CONSERVATIVE"
 
     return cable_table_base(profile=prof), prof
 
@@ -137,21 +114,13 @@ def cable_allowable_current_adv(
     install,
     ambient,
     parallel,
-    mode="AUTO",                # "AUTO" or "MANUAL"
-    section_mm2_input=None,     # MANUAL일 때 사용
+    mode="AUTO",
+    section_mm2_input=None,
     table=None,
     standard="KESC",
-    table_profile=None          # "IEC_CONSERVATIVE"/"IEC_REALISTIC_1C"
+    table_profile=None,
+    design_margin=1.25,
 ):
-    """
-    status:
-      - '계산 불가' : 입력 누락으로 계산 불가
-      - '부적합'   : 계산 결과 기준 미달
-      - '적합'     : 기준 만족
-
-    반환 키:
-      status, section_mm2_used, parallel, I_allow_total, I_allow_single, k_temp, table_profile_used, reason
-    """
     missing = []
     if material is None:
         missing.append("재질")
@@ -173,6 +142,8 @@ def cable_allowable_current_adv(
             "I_allow_single": None,
             "k_temp": None,
             "table_profile_used": None,
+            "design_margin_used": None,
+            "I_design_A": None,
             "reason": f"입력 누락으로 계산 불가: {', '.join(missing)} 미입력",
         }
 
@@ -180,6 +151,7 @@ def cable_allowable_current_adv(
         I_load = float(I_load)
         ambient = float(ambient)
         parallel = int(parallel)
+        dm = float(design_margin) if design_margin is not None else 1.25
     except Exception:
         return {
             "status": "계산 불가",
@@ -189,11 +161,15 @@ def cable_allowable_current_adv(
             "I_allow_single": None,
             "k_temp": None,
             "table_profile_used": None,
-            "reason": "입력 형식 오류로 계산 불가(부하전류/주위온도/병렬 케이블 수)",
+            "design_margin_used": None,
+            "I_design_A": None,
+            "reason": "입력 형식 오류로 계산 불가(I_load/ambient/parallel/design_margin)",
         }
 
     if parallel <= 0:
         parallel = 1
+    if dm <= 0:
+        dm = 1.25
 
     table_used, profile_used = _resolve_table(table, table_profile, standard)
 
@@ -201,7 +177,8 @@ def cable_allowable_current_adv(
         material, insulation, install, ambient, parallel
     )
 
-    # -------- MANUAL --------
+    I_design = I_load * dm
+
     if str(mode).upper() == "MANUAL":
         if section_mm2_input is None:
             return {
@@ -212,6 +189,8 @@ def cable_allowable_current_adv(
                 "I_allow_single": None,
                 "k_temp": float(k_temp),
                 "table_profile_used": profile_used,
+                "design_margin_used": float(dm),
+                "I_design_A": float(I_design),
                 "reason": "수동 입력 모드인데 단면적(S) 미입력으로 계산 불가",
             }
         try:
@@ -225,6 +204,8 @@ def cable_allowable_current_adv(
                 "I_allow_single": None,
                 "k_temp": float(k_temp),
                 "table_profile_used": profile_used,
+                "design_margin_used": float(dm),
+                "I_design_A": float(I_design),
                 "reason": "단면적(S) 형식 오류로 계산 불가",
             }
         if S_in <= 0:
@@ -236,10 +217,11 @@ def cable_allowable_current_adv(
                 "I_allow_single": None,
                 "k_temp": float(k_temp),
                 "table_profile_used": profile_used,
+                "design_margin_used": float(dm),
+                "I_design_A": float(I_design),
                 "reason": "단면적(S)은 0보다 커야 합니다.",
             }
 
-        # 테이블에서 가장 가까운 상위(mm2) 허용전류를 기준값으로 사용(간이)
         table_sorted = sorted(table_used, key=lambda x: x[0])
         base_allow = None
         mm2_for_base = None
@@ -255,24 +237,16 @@ def cable_allowable_current_adv(
         single_allow = base_allow * k_mat * k_ins * k_inst * k_temp
         total_allow = single_allow * parallel * k_group
 
-        if I_load <= total_allow:
-            status = "적합"
-            reason = (
-                "수동 입력 모드(자동선정 OFF): 입력 단면적(S) 기준으로 허용전류 ≥ 부하전류\n"
-                f"- S(입력)={S_in:.0f}mm² / 테이블환산={mm2_for_base}mm² ({profile_used})\n"
-                f"- 병렬 {parallel} × 집합계수 {k_group:.2f}\n"
-                f"- 온도보정 k_temp={k_temp:.3f}\n"
-                f"- 총 허용전류: {total_allow:.0f} A, 부하전류: {I_load:.0f} A"
-            )
-        else:
-            status = "부적합"
-            reason = (
-                "수동 입력 모드(자동선정 OFF): 계산 결과 기준 미달(부하전류 과다)\n"
-                f"- S(입력)={S_in:.0f}mm² / 테이블환산={mm2_for_base}mm² ({profile_used})\n"
-                f"- 병렬 {parallel} × 집합계수 {k_group:.2f}\n"
-                f"- 온도보정 k_temp={k_temp:.3f}\n"
-                f"- 총 허용전류: {total_allow:.0f} A, 부하전류: {I_load:.0f} A"
-            )
+        ok = (I_design <= total_allow)
+        status = "적합" if ok else "부적합"
+        reason = (
+            "수동 입력 모드(자동선정 OFF)\n"
+            f"- 목표 설계전류 I_design = I_load×여유계수 = {I_load:.0f}×{dm:.2f} = {I_design:.0f} A\n"
+            f"- S(입력)={S_in:.0f}mm² / 테이블환산={mm2_for_base}mm² ({profile_used})\n"
+            f"- 병렬 {parallel} × 집합계수 {k_group:.2f}\n"
+            f"- 온도보정 k_temp={k_temp:.3f}\n"
+            f"- 총 허용전류: {total_allow:.0f} A"
+        )
 
         return {
             "status": status,
@@ -282,10 +256,11 @@ def cable_allowable_current_adv(
             "I_allow_single": float(single_allow),
             "k_temp": float(k_temp),
             "table_profile_used": profile_used,
+            "design_margin_used": float(dm),
+            "I_design_A": float(I_design),
             "reason": reason,
         }
 
-    # -------- AUTO --------
     chosen_S = None
     chosen_single = None
     chosen_total = None
@@ -293,7 +268,7 @@ def cable_allowable_current_adv(
     for mm2, base_allow in sorted(table_used, key=lambda x: x[0]):
         single_allow = base_allow * k_mat * k_ins * k_inst * k_temp
         total_allow = single_allow * parallel * k_group
-        if I_load <= total_allow:
+        if I_design <= total_allow:
             chosen_S = mm2
             chosen_single = float(single_allow)
             chosen_total = float(total_allow)
@@ -311,12 +286,15 @@ def cable_allowable_current_adv(
             "I_allow_single": float(max_single),
             "k_temp": float(k_temp),
             "table_profile_used": profile_used,
+            "design_margin_used": float(dm),
+            "I_design_A": float(I_design),
             "reason": (
-                "자동선정 모드: 계산 결과 기준 미달(부하전류 과다)\n"
+                "자동선정 모드: 설계여유계수 포함 기준 미달\n"
+                f"- 목표 설계전류 I_design = {I_design:.0f} A (I_load {I_load:.0f}×{dm:.2f})\n"
                 f"- 최대 후보: {max_mm2}mm² ({profile_used})\n"
                 f"- 병렬 {parallel} × 집합계수 {k_group:.2f}\n"
                 f"- 온도보정 k_temp={k_temp:.3f}\n"
-                f"- 총 허용전류: {max_total:.0f} A, 부하전류: {I_load:.0f} A"
+                f"- 총 허용전류: {max_total:.0f} A"
             ),
         }
 
@@ -328,25 +306,32 @@ def cable_allowable_current_adv(
         "I_allow_single": float(chosen_single),
         "k_temp": float(k_temp),
         "table_profile_used": profile_used,
+        "design_margin_used": float(dm),
+        "I_design_A": float(I_design),
         "reason": (
-            "자동선정 모드: 계산 결과 기준 만족(적합)\n"
+            "자동선정 모드: 설계여유계수 포함 기준 만족\n"
+            f"- 목표 설계전류 I_design = {I_design:.0f} A (I_load {I_load:.0f}×{dm:.2f})\n"
             f"- 선정 S: {chosen_S}mm² ({profile_used})\n"
             f"- 병렬 {parallel} × 집합계수 {k_group:.2f}\n"
             f"- 온도보정 k_temp={k_temp:.3f}\n"
-            f"- 총 허용전류: {chosen_total:.0f} A, 부하전류: {I_load:.0f} A"
+            f"- 총 허용전류: {chosen_total:.0f} A"
         ),
     }
 
 
-def thermal_adiabatic_check(I_sc_A, t_clear_s, section_mm2_used, material, insulation, standard):
-    """
-    단열(adiabatic) 열적 검토:
-      I * sqrt(t) <= k * S
-
-    t_clear 정책: 사용자 입력값(t_clear_s)만 사용
-    """
+def thermal_adiabatic_check(
+    I_sc_A,
+    t_clear_s,
+    section_mm2_used,
+    material,
+    insulation,
+    standard,
+    t_clear_input=None,
+    t_trip_est=None,
+    t_clear_policy="NONE",
+):
     if t_clear_s is None:
-        return {"status": "계산 불가", "reason": "입력 누락으로 계산 불가: t_clear 미입력", "detail": None}
+        return {"status": "계산 불가", "reason": "입력 누락으로 계산 불가: 차단시간(t_used) 미확정", "detail": None}
 
     if section_mm2_used is None:
         return {"status": "계산 불가", "reason": "입력 누락으로 계산 불가: 최종 케이블 단면적(S) 미확정", "detail": None}
@@ -356,10 +341,10 @@ def thermal_adiabatic_check(I_sc_A, t_clear_s, section_mm2_used, material, insul
         t = float(t_clear_s)
         S = float(section_mm2_used)
     except Exception:
-        return {"status": "계산 불가", "reason": "입력 형식 오류로 계산 불가(Isc/t_clear/S)", "detail": None}
+        return {"status": "계산 불가", "reason": "입력 형식 오류로 계산 불가(Isc/t_used/S)", "detail": None}
 
     if t <= 0:
-        return {"status": "계산 불가", "reason": "t_clear는 0보다 커야 합니다.", "detail": None}
+        return {"status": "계산 불가", "reason": "차단시간(t_used)은 0보다 커야 합니다.", "detail": None}
     if S <= 0:
         return {"status": "계산 불가", "reason": "단면적(S)은 0보다 커야 합니다.", "detail": None}
 
@@ -380,15 +365,21 @@ def thermal_adiabatic_check(I_sc_A, t_clear_s, section_mm2_used, material, insul
     rhs = k * S
 
     status = "적합" if lhs <= rhs else "부적합"
+
+    input_txt = "-" if t_clear_input is None else f"{float(t_clear_input):.3f}s"
+    tcc_txt = "-" if t_trip_est is None else f"{float(t_trip_est):.3f}s"
+
     return {
         "status": status,
         "reason": (
             "단열(adiabatic) 열적 검토 결과\n"
-            f"- I·√t = {lhs:,.0f}\n"
+            f"- I·√t_used = {lhs:,.0f}\n"
             f"- k·S = {rhs:,.0f}  (k={k}, S={S:.0f}mm²)\n"
-            f"- t_clear(사용자입력) = {t:.3f}s"
+            f"- t_clear 입력 = {input_txt}\n"
+            f"- TCC 추정 = {tcc_txt}\n"
+            f"- t_used = {t:.3f}s ({t_clear_policy})"
         ),
-        "detail": {"lhs": lhs, "rhs": rhs, "k": k, "S": S, "t_clear": t},
+        "detail": {"lhs": lhs, "rhs": rhs, "k": k, "S": S, "t_used": t, "t_clear_input": t_clear_input, "t_trip_est": t_trip_est},
     }
 
 
@@ -402,13 +393,9 @@ def cable_allowable_hard_op(
     section_mm2_input=None,
     ambient_op=None,
     standard="KESC",
-    table_profile=None
+    table_profile=None,
+    design_margin=1.25,
 ):
-    """
-    정답 구조 고정:
-    - 설비 판정(Hard)        : 기준 온도(30℃) 고정
-    - 운영 조건 보정(Optional): 기상/운영 온도로 허용전류 재평가
-    """
     hard = cable_allowable_current_adv(
         I_load=I_load,
         material=material,
@@ -420,6 +407,7 @@ def cable_allowable_hard_op(
         section_mm2_input=section_mm2_input,
         standard=standard,
         table_profile=table_profile,
+        design_margin=design_margin,
     )
 
     if ambient_op is None:
@@ -459,10 +447,11 @@ def cable_allowable_hard_op(
         section_mm2_input=section_mm2_input,
         standard=standard,
         table_profile=table_profile,
+        design_margin=design_margin,
     )
 
     op = {
-        "status": "정상" if op_raw["status"] == "적합" else ("주의/부족" if op_raw["status"] == "부적합" else "평가 불가"),
+        "status": "규정 충족" if op_raw["status"] == "적합" else ("규정 미달" if op_raw["status"] == "부적합" else "평가 불가"),
         "ambient": ambient_op,
         "k_temp": op_raw.get("k_temp"),
         "I_allow_total": op_raw.get("I_allow_total"),

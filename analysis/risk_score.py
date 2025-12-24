@@ -1,116 +1,107 @@
 # analysis/risk_score.py
-
-def _clamp(x, lo, hi):
-    return max(lo, min(hi, x))
-
-
 def calculate_operation_risk(
-    evt_prob,
-    max_duration,
-    duration_limit,
+    evt_prob: float,
+    max_duration: float,
+    duration_limit: float,
     tcc_margin,
-    breaker_ok,
-    hard_status
+    breaker_ok: bool,
+    hard_status,
+    is_demo: bool = False,
 ):
     """
-    위험도 점수(0~100)
-    - 값이 높을수록 운전 리스크가 큼
-    - 보호(TCC)는 '보호 부족 시'에만 위험 가중으로 반영 (0~20)
+    반환:
+      evt_score / time_score / protection_score / total / protection_note
+    정책:
+      - DEMO면 total=None로 두고 정량평가 비활성(그래프 UI 확인용)
+      - 보호(TCC) 점수는 (설비 PASS) + (차단기 적합) + (tcc_margin 계산 가능)일 때만 반영
+      - hard_status는 코드값(PASS/FAIL/NEED_MORE) 또는 텍스트(적합/부적합)를 모두 허용
     """
+    def _clamp(x, lo, hi):
+        return max(lo, min(hi, x))
 
-    # ---------- EVT 위험(0~40): 확률이 높을수록 위험 증가 ----------
+    def _hard_is_pass(x):
+        if x is None:
+            return False
+        s = str(x).strip().upper()
+        if s == "PASS":
+            return True
+        if s in ("적합", "규정 충족"):
+            return True
+        return False
+
+    evt_p = 0.0
     try:
-        p = float(evt_prob)
+        evt_p = float(evt_prob)
     except Exception:
-        p = 0.0
-    p = _clamp(p, 0.0, 1.0)
-    evt_risk = 40.0 * p  # p=1이면 40점(최대 위험)
+        evt_p = 0.0
+    evt_p = _clamp(evt_p, 0.0, 1.0)
 
-    # ---------- 지속시간 위험(0~40): 기준 초과할수록 위험 증가 ----------
+    evt_score = _clamp(evt_p * 40.0, 0.0, 40.0)
+
+    dur = 0.0
     try:
-        d = float(max_duration)
+        dur = float(max_duration)
     except Exception:
-        d = 0.0
+        dur = 0.0
+    lim = 1.0
     try:
-        L = float(duration_limit)
+        lim = float(duration_limit)
+        if lim <= 0:
+            lim = 1.0
     except Exception:
-        L = 5.0
-    if L <= 0:
-        L = 5.0
+        lim = 1.0
 
-    # d/L 비율 기반. 0이면 0점, L이면 40점, 2L 이상이면 40점(포화)
-    ratio = _clamp(d / L, 0.0, 2.0)
-    time_risk = 40.0 * _clamp(ratio / 1.0, 0.0, 1.0)
+    time_ratio = _clamp(dur / lim, 0.0, 1.0)
+    time_score = time_ratio * 40.0
 
-    # ---------- 보호(TCC) 위험(0~20): 보호 부족 시에만 위험 가중 ----------
-    # 정책 고정:
-    # - Hard 적합이 아니면 보호 위험 점수는 N/A (점수 제외)
-    # - Icu 부적합이면 (breaker_ok=False) 보호 위험은 최대(20)
-    # - TCC 평가 가능(tcc_margin 0~1)일 때: margin이 낮을수록 위험 증가
-    protection_risk = None
+    protection_score = None
     protection_note = ""
 
-    if hard_status != "적합":
-        protection_risk = None
-        protection_note = "설비 판정이 '적합'으로 확정되지 않아 보호 위험 점수는 N/A(점수 제외) 처리"
+    hard_pass = _hard_is_pass(hard_status)
+
+    if not hard_pass:
+        protection_score = None
+        protection_note = "설비 PASS가 아니므로 보호(TCC) 점수는 반영하지 않음"
+    elif not bool(breaker_ok):
+        protection_score = None
+        protection_note = "차단기 적합이 아니므로 보호(TCC) 점수는 반영하지 않음"
     else:
-        if breaker_ok is False:
-            protection_risk = 20.0
-            protection_note = "차단기 Icu 부적합 시 보호 부족으로 최대 위험 가중(20/20)"
-        else:
+        try:
             if tcc_margin is None:
-                protection_risk = None
-                protection_note = "TCC 파라미터/평가값 부족으로 보호 위험 점수는 N/A(점수 제외) 처리"
-            else:
-                try:
-                    m = float(tcc_margin)
-                except Exception:
-                    m = None
+                raise ValueError("tcc_margin None")
+            m = float(tcc_margin)
+            protection_score = _clamp(m * 20.0, 0.0, 20.0)
+            protection_note = "TCC 여유 기반 점수 반영"
+        except Exception:
+            protection_score = None
+            protection_note = "TCC 계산 불가로 보호(TCC) 점수 N/A"
 
-                if m is None:
-                    protection_risk = None
-                    protection_note = "TCC 평가값 해석 불가로 보호 위험 점수는 N/A(점수 제외) 처리"
-                else:
-                    m = _clamp(m, 0.0, 1.0)
-                    # m=1(여유 충분) -> 위험 0
-                    # m=0(여유 없음) -> 위험 20
-                    protection_risk = 20.0 * (1.0 - m)
-                    protection_note = "보호 부족 시에만 위험 가중으로 반영(여유가 클수록 0에 수렴)"
-
-    total = evt_risk + time_risk + (protection_risk if protection_risk is not None else 0.0)
-    total = _clamp(total, 0.0, 100.0)
-
-    note = (
-        "본 점수는 위험도 점수로,\n"
-        "값이 높을수록 운전 리스크가 큼을 의미합니다.\n"
-        "보호(TCC) 점수는 보호 부족 시에만 위험 가중으로 반영됩니다."
-    )
+    if is_demo:
+        total = None
+    else:
+        total_raw = evt_score + time_score + (protection_score if protection_score is not None else 0.0)
+        total = _clamp(total_raw, 0.0, 100.0)
 
     return {
-        "total": float(total),
-        "evt_score": float(evt_risk),
-        "time_score": float(time_risk),
-        "protection_score": (None if protection_risk is None else float(protection_risk)),
+        "evt_score": float(evt_score),
+        "time_score": float(time_score),
+        "protection_score": (None if protection_score is None else float(protection_score)),
+        "total": total,
         "protection_note": protection_note,
-        "note": note,
     }
 
 
-def operation_risk_level(score):
-    """
-    위험도 등급(표현은 예시. 필요하면 구간 바꾸면 됨)
-    """
+def operation_risk_level(total_score):
+    if total_score is None:
+        return "참고(비활성)"
     try:
-        s = float(score)
+        s = float(total_score)
     except Exception:
-        s = 0.0
-
+        return "알 수 없음"
     if s >= 80:
         return "매우 높음"
     if s >= 60:
         return "높음"
     if s >= 40:
         return "보통"
-    if s >= 20:
-        return "낮음"
-    return "매우 낮음"
+    return "낮음"

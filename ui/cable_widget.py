@@ -38,7 +38,11 @@ class CableWidget(QWidget):
         # 프로파일은 저장만 해두고(향후 테이블 선택에 활용),
         # ResultWidget에서 그대로 넘겨서 engineering.py가 쓰게 만들기 위한 필드
         self.profile = QComboBox()
-        self.profile.addItems(["IEC 보수(Conservative)", "IEC 현실(1C)"])
+        self.profile.addItems([
+            "KESC(기본)",
+            "IEC 보수(Conservative)",
+            "IEC 현실(1C)"
+        ])
 
         self.material = QComboBox()
         self.material.addItems(["Cu", "Al"])
@@ -135,7 +139,13 @@ class CableWidget(QWidget):
             parallel = 1
 
         mode = "MANUAL" if "MANUAL" in self.mode.currentText() else "AUTO"
-        profile = "IEC_REALISTIC_1C" if "현실" in self.profile.currentText() else "IEC_CONSERVATIVE"
+        txt = self.profile.currentText()
+        if "KESC" in txt:
+            profile = "KESC_DEFAULT"
+        elif "현실" in txt:
+            profile = "IEC_REALISTIC_1C"
+        else:
+            profile = "IEC_CONSERVATIVE"
 
         section_mm2 = None
         if mode == "MANUAL":
